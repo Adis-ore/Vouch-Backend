@@ -7,50 +7,48 @@ const { initializePayment } = require('../lib/paystack')
 const { sendPush } = require('../lib/push')
 const { writeHistory } = require('../lib/historyHelper')
 const { processStakeRefund } = require('../lib/refund')
+const { canCreateOrJoinJourney, PLAN_LIMITS } = require('../lib/planLimits')
 
 // GET /journeys/mine — journeys the current user is a member of
 router.get('/mine', requireAuth, async (req, res, next) => {
   try {
     const today = new Date().toISOString().split('T')[0]
 
-    const [membershipResult, checkinsResult] = await Promise.all([
+    const [membershipResult, checkinsResult, pastResult] = await Promise.all([
+      // Active memberships only (status = 'active')
       adminSupabase
         .from('journey_members')
         .select('*, journey:journeys(id, title, category, status, duration_days, start_date, current_participants, max_participants, stake_amount, cover_image_url, creator_id, creator:users!creator_id(id, full_name, avatar_url))')
-        .eq('user_id', req.user.id),
+        .eq('user_id', req.user.id)
+        .eq('status', 'active'),
       adminSupabase
         .from('checkins')
         .select('journey_id')
         .eq('user_id', req.user.id)
         .eq('checkin_date', today),
+      // Past memberships (completed, abandoned, auto_abandoned)
+      adminSupabase
+        .from('journey_members')
+        .select('*, journey:journeys(id, title, category, duration_days, stake_amount, status)')
+        .eq('user_id', req.user.id)
+        .in('status', ['completed', 'abandoned', 'auto_abandoned'])
+        .order('completed_at', { ascending: false, nullsFirst: false })
+        .limit(50),
     ])
 
     if (membershipResult.error) throw membershipResult.error
 
-    const memberships = membershipResult.data
-    const todayCheckins = checkinsResult.data
+    const memberships = membershipResult.data || []
+    const todayCheckins = checkinsResult.data || []
+    const pastMemberships = pastResult.data || []
 
-    // journey_history may not exist yet — fail gracefully
-    let history = null
-    try {
-      const { data } = await adminSupabase
-        .from('journey_history')
-        .select('*')
-        .eq('user_id', req.user.id)
-        .order('ended_at', { ascending: false })
-        .limit(50)
-      history = data
-    } catch (_) {}
-
-    const checkedInTodaySet = new Set((todayCheckins || []).map(c => c.journey_id))
+    const checkedInTodaySet = new Set(todayCheckins.map(c => c.journey_id))
 
     const active = []
-
-    for (const m of (memberships || [])) {
+    for (const m of memberships) {
       const j = m.journey
       if (!j) continue
       if (!['open', 'active'].includes(j.status)) continue
-      // draft/pending_payment live in GET /drafts
 
       let daysElapsed = 0, progressPercent = 0
       if (j.start_date) {
@@ -70,21 +68,46 @@ router.get('/mine', requireAuth, async (req, res, next) => {
       })
     }
 
-    // Past comes from journey_history — captures left, abandoned, auto_removed, completed
-    const past = (history || []).map(h => ({
-      id: h.journey_id || h.id,
-      history_id: h.id,
-      title: h.journey_title,
-      category: h.category,
-      duration_days: h.duration_days,
-      status: h.outcome,           // 'completed' | 'abandoned' | 'auto_removed' | 'left'
-      my_role: h.my_role,
-      total_checkins: h.total_checkins,
-      stake_amount: h.stake_amount,
-      stake_outcome: h.stake_outcome,
-      ended_at: h.ended_at,
-      joined_at: h.joined_at,
-    }))
+    // Fetch stake outcomes for past journeys
+    const pastJourneyIds = pastMemberships.map(m => m.journey_id).filter(Boolean)
+    let stakeMap = {}
+    if (pastJourneyIds.length > 0) {
+      const { data: stakes } = await adminSupabase
+        .from('stakes')
+        .select('journey_id, status, refund_percent')
+        .eq('user_id', req.user.id)
+        .in('journey_id', pastJourneyIds)
+      for (const s of (stakes || [])) stakeMap[s.journey_id] = s
+    }
+
+    const past = pastMemberships
+      .map(m => {
+        const j = m.journey || {}
+        const stake = stakeMap[m.journey_id]
+        const stakeStatus = stake?.status
+        const stake_outcome = stakeStatus === 'refunded' ? 'returned'
+          : stakeStatus === 'forfeited' ? 'forfeited' : null
+        const ended_at = m.completed_at || m.abandoned_at
+        return {
+          id: m.journey_id,
+          history_id: m.id,
+          title: j.title,
+          category: j.category,
+          duration_days: j.duration_days,
+          stake_amount: j.stake_amount,
+          status: m.status,
+          my_role: m.role,
+          total_checkins: m.total_checkins || 0,
+          stake_outcome,
+          ended_at,
+        }
+      })
+      .sort((a, b) => {
+        if (!a.ended_at && !b.ended_at) return 0
+        if (!a.ended_at) return 1
+        if (!b.ended_at) return -1
+        return new Date(b.ended_at) - new Date(a.ended_at)
+      })
 
     logger.info('[JOURNEYS] Fetched user journeys', { userId: req.user.id, active: active.length, past: past.length })
     res.json({ success: true, data: { active, past } })
@@ -158,9 +181,18 @@ router.post('/', requireAuth, async (req, res, next) => {
 
     const { data: creator } = await adminSupabase
       .from('users')
-      .select('country, region')
+      .select('country, region, plan')
       .eq('id', req.user.id)
       .single()
+
+    // Enforce per-plan active journey limit
+    const { allowed, count: activeCount, limit: planLimit } = await canCreateOrJoinJourney(req.user.id, creator?.plan ?? 'free')
+    if (!allowed) {
+      return res.status(403).json({
+        success: false,
+        error: { code: 'JOURNEY_LIMIT_REACHED', message: `You can only be in ${planLimit} active journeys on the ${creator?.plan ?? 'free'} plan. Complete or leave a journey to create a new one.` }
+      })
+    }
 
     const amount = parseFloat(stake_amount) || 0
     const initialStatus = amount > 0 ? 'pending_payment' : 'open'
@@ -271,19 +303,13 @@ router.post('/:id/join', requireAuth, async (req, res, next) => {
       return res.status(400).json({ success: false, error: { code: 'ALREADY_MEMBER', message: 'Already a member of this journey' } })
     }
 
-    // Enforce per-plan active journey limit
-    const PLAN_LIMITS = { free: 3, pro: 10, elite: 50 }
-    const userPlanForLimit = currentUser?.plan ?? 'free'
-    const journeyLimit = PLAN_LIMITS[userPlanForLimit] ?? 3
-    const { count: activeCount } = await adminSupabase
-      .from('journey_members')
-      .select('journey_id, journeys!inner(status)', { count: 'exact', head: true })
-      .eq('user_id', req.user.id)
-      .in('journeys.status', ['open', 'active'])
-    if ((activeCount ?? 0) >= journeyLimit) {
+    // Enforce per-plan active journey limit (counts jm.status = 'active' slots)
+    const userPlan = currentUser?.plan ?? 'free'
+    const { allowed: canJoin, limit: joinLimit } = await canCreateOrJoinJourney(req.user.id, userPlan)
+    if (!canJoin) {
       return res.status(403).json({
         success: false,
-        error: { code: 'JOURNEY_LIMIT_REACHED', message: `You can only be in ${journeyLimit} active journeys on the ${userPlanForLimit} plan. Upgrade to join more.` }
+        error: { code: 'JOURNEY_LIMIT_REACHED', message: `You can only be in ${joinLimit} active journeys on the ${userPlan} plan. Complete or leave a journey to join more.` }
       })
     }
 
@@ -432,11 +458,16 @@ router.post('/:id/leave', requireAuth, async (req, res, next) => {
       .update({ status: 'forfeited', forfeited_at: new Date().toISOString() })
       .eq('journey_id', journey.id).eq('user_id', req.user.id).eq('status', 'held')
 
-    // Write history BEFORE deleting member record
-    await writeHistory(req.user.id, journey, member, 'left')
+    const completionPct = journey.duration_days > 0
+      ? Math.round(((member?.total_checkins || 0) / journey.duration_days) * 100) : 0
 
-    await adminSupabase.from('journey_members').delete()
+    // Mark member record as abandoned (keep for history/stats), then write history
+    await adminSupabase
+      .from('journey_members')
+      .update({ status: 'abandoned', abandoned_at: new Date().toISOString(), abandoned_completion_percent: completionPct })
       .eq('journey_id', journey.id).eq('user_id', req.user.id)
+
+    await writeHistory(req.user.id, journey, member, 'left').catch(() => {})
 
     await adminSupabase
       .from('journeys')
@@ -484,22 +515,22 @@ router.post('/:id/abandon', requireAuth, async (req, res, next) => {
 
     // Process each member
     for (const m of (members || [])) {
+      const completionPercent = journey.duration_days > 0
+        ? Math.round(((m.total_checkins || 0) / journey.duration_days) * 100) : 0
+
       // Tier-based refund based on how far the member got
       if (m.stake_status === 'held') {
-        const completionPercent = journey.duration_days > 0
-          ? Math.round(((m.total_checkins || 0) / journey.duration_days) * 100)
-          : 0
-        await processStakeRefund({
-          journeyId: journey.id,
-          userId: m.user_id,
-          completionPercent,
-        })
+        await processStakeRefund({ journeyId: journey.id, userId: m.user_id, completionPercent })
       }
 
-      // Write history for every member (including creator)
-      await writeHistory(m.user_id, journey, m, 'abandoned')
+      // Mark member record as abandoned (frees slot for plan limits)
+      await adminSupabase
+        .from('journey_members')
+        .update({ status: 'abandoned', abandoned_at: new Date().toISOString(), abandoned_completion_percent: completionPercent })
+        .eq('journey_id', journey.id).eq('user_id', m.user_id)
 
-      // Notify non-creators
+      await writeHistory(m.user_id, journey, m, 'abandoned').catch(() => {})
+
       if (m.user_id !== req.user.id) {
         await sendPush(
           m.user_id,

@@ -1,8 +1,10 @@
 const router = require('express').Router()
 const { requireAuth } = require('../middleware/auth')
 const { adminSupabase } = require('../lib/supabase')
-const { updateStreak, checkAndAwardBadges } = require('../lib/streak')
+const { updateStreak } = require('../lib/streak')
+const { checkAndAwardBadges } = require('../lib/badges')
 const { updateReputation } = require('../lib/reputation')
+const { completeJourneyForUser } = require('../lib/completion')
 const { sendPush } = require('../lib/push')
 const { getTimezoneForCountry, getLocalDate } = require('../lib/timezones')
 
@@ -77,23 +79,35 @@ router.post('/', requireAuth, async (req, res, next) => {
     if (error) throw error
 
     const newStreak = await updateStreak(req.user.id, journey_id, today, timezone)
-    await checkAndAwardBadges(req.user.id, newStreak)
 
+    // Award streak + checkin badges
+    await checkAndAwardBadges(req.user.id, { event: 'streak_updated', streak: newStreak })
+    await checkAndAwardBadges(req.user.id, { event: 'checkin_submitted' })
+
+    const newTotalCheckins = member.total_checkins + 1
     await adminSupabase
       .from('journey_members')
       .update({
-        total_checkins: member.total_checkins + 1,
+        total_checkins: newTotalCheckins,
         last_checkin_date: today,
         consecutive_missed: 0
       })
       .eq('journey_id', journey_id)
       .eq('user_id', req.user.id)
 
+    // Check if this check-in completes the journey for this user
+    let journeyCompleted = false
+    if (newTotalCheckins >= journey.duration_days) {
+      const result = await completeJourneyForUser(journey_id, req.user.id)
+      journeyCompleted = result.completed === true
+    }
+
     // Notify other members
     const { data: members } = await adminSupabase
       .from('journey_members')
       .select('user_id')
       .eq('journey_id', journey_id)
+      .eq('status', 'active')
       .neq('user_id', req.user.id)
 
     const { data: checkinUser } = await adminSupabase
@@ -114,7 +128,7 @@ router.post('/', requireAuth, async (req, res, next) => {
       }
     }
 
-    res.status(201).json({ success: true, checkin, current_streak: newStreak })
+    res.status(201).json({ success: true, checkin, current_streak: newStreak, journey_completed: journeyCompleted })
   } catch (err) { next(err) }
 })
 

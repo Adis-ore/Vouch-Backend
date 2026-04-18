@@ -13,7 +13,7 @@ router.get('/me', requireAuth, async (req, res, next) => {
 
     const { data: user, error } = await adminSupabase
       .from('users')
-      .select('id, full_name, avatar_url, avatar_seed, avatar_bg, bio, country, region, plan, streak_total, longest_streak, current_streak, global_streak, global_streak_date, journeys_completed, reputation_score, total_approvals_received, total_flags_received, notification_enabled, streak_mode, created_at, badges(badge_key, awarded_at)')
+      .select('id, full_name, avatar_url, avatar_seed, avatar_bg, bio, country, region, plan, streak_total, longest_streak, current_streak, global_streak, global_streak_date, journeys_completed, reputation_score, total_approvals_received, total_flags_received, notification_enabled, streak_mode, created_at, badges(key, name, earned_at)')
       .eq('id', req.user.id)
       .single()
 
