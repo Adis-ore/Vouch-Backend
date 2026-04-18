@@ -84,4 +84,55 @@ router.post('/journey/:journeyId', requireAuth, async (req, res, next) => {
   } catch (err) { next(err) }
 })
 
+// PATCH /messages/:id — edit own message
+router.patch('/:id', requireAuth, async (req, res, next) => {
+  try {
+    const { content } = req.body
+    if (!content || !content.trim()) {
+      return res.status(400).json({ success: false, error: { code: 'MISSING_FIELDS' } })
+    }
+
+    const { data: msg } = await adminSupabase
+      .from('messages')
+      .select('sender_id')
+      .eq('id', req.params.id)
+      .single()
+
+    if (!msg) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND' } })
+    if (msg.sender_id !== req.user.id) {
+      return res.status(403).json({ success: false, error: { code: 'FORBIDDEN' } })
+    }
+
+    const { data: updated, error } = await adminSupabase
+      .from('messages')
+      .update({ content: content.trim(), edited_at: new Date().toISOString() })
+      .eq('id', req.params.id)
+      .select('*, sender:users!sender_id(id, full_name, avatar_url)')
+      .single()
+
+    if (error) throw error
+    res.json({ success: true, message: updated })
+  } catch (err) { next(err) }
+})
+
+// DELETE /messages/:id — delete own message
+router.delete('/:id', requireAuth, async (req, res, next) => {
+  try {
+    const { data: msg } = await adminSupabase
+      .from('messages')
+      .select('sender_id')
+      .eq('id', req.params.id)
+      .single()
+
+    if (!msg) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND' } })
+    if (msg.sender_id !== req.user.id) {
+      return res.status(403).json({ success: false, error: { code: 'FORBIDDEN' } })
+    }
+
+    const { error } = await adminSupabase.from('messages').delete().eq('id', req.params.id)
+    if (error) throw error
+    res.json({ success: true })
+  } catch (err) { next(err) }
+})
+
 module.exports = router

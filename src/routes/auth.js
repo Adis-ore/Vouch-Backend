@@ -2,6 +2,7 @@ const router = require('express').Router()
 const logger = require('../config/logger')
 const { requireAuth } = require('../middleware/auth')
 const { adminSupabase, anonSupabase } = require('../lib/supabase')
+const { getTimezoneForCountry } = require('../lib/timezones')
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -100,15 +101,17 @@ router.post('/signup', async (req, res, next) => {
     logger.info('[AUTH] Supabase auth account created', { userId: user.id, email: email.trim() })
 
     // 2. Upsert profile row (handles retried signups idempotently)
+    const userCountry = country || 'Nigeria'
     const { data: profile, error: profileError } = await adminSupabase
       .from('users')
       .upsert({
         id: user.id,
         full_name: full_name.trim(),
         bio: bio || null,
-        country: country || 'Nigeria',
+        country: userCountry,
         region: region || 'Lagos',
-        phone: phone || null
+        phone: phone || null,
+        timezone: getTimezoneForCountry(userCountry),
       }, { onConflict: 'id' })
       .select()
       .single()
@@ -120,6 +123,16 @@ router.post('/signup', async (req, res, next) => {
         error: { code: 'PROFILE_FAILED', message: 'Account created but profile setup failed. Please try signing in.' }
       })
     }
+
+    // Send welcome notification
+    await adminSupabase.from('notifications').insert({
+      user_id: user.id,
+      type: 'welcome',
+      title: `Welcome to Vouch, ${full_name.trim().split(' ')[0]}`,
+      body: "You're all set. Create your first journey or find one to join — your partner is out there.",
+      data: { route: 'discover' },
+      read: false,
+    }).catch(() => {}) // non-blocking
 
     // session is null when Supabase email confirmation is ON
     if (!session) {
@@ -143,6 +156,7 @@ router.post('/signup', async (req, res, next) => {
           access_token: session.access_token,
           refresh_token: session.refresh_token,
           expires_at: session.expires_at,
+          expires_in: session.expires_in,
         }
       }
     })
@@ -196,6 +210,7 @@ router.post('/signin', async (req, res, next) => {
           access_token: data.session.access_token,
           refresh_token: data.session.refresh_token,
           expires_at: data.session.expires_at,
+          expires_in: data.session.expires_in,
         }
       }
     })
@@ -232,6 +247,7 @@ router.post('/refresh', async (req, res, next) => {
           access_token: data.session.access_token,
           refresh_token: data.session.refresh_token,
           expires_at: data.session.expires_at,
+          expires_in: data.session.expires_in,
         }
       }
     })
@@ -299,6 +315,118 @@ router.put('/password', requireAuth, async (req, res, next) => {
 
     logger.info('[AUTH] Password updated', { userId: req.user.id })
     res.json({ success: true, message: 'Password updated successfully.' })
+  } catch (err) { next(err) }
+})
+
+// POST /auth/google — sign in / sign up via Google OAuth code exchange
+router.post('/google', async (req, res, next) => {
+  try {
+    const { code, redirect_uri } = req.body
+
+    if (!code || !redirect_uri) {
+      return res.status(400).json({
+        success: false,
+        error: { code: 'MISSING_FIELDS', message: 'code and redirect_uri are required.' }
+      })
+    }
+
+    logger.info('[AUTH] Google sign-in — exchanging code')
+
+    // Exchange authorization code for tokens using client_secret
+    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        code,
+        client_id: process.env.GOOGLE_CLIENT_ID,
+        client_secret: process.env.GOOGLE_CLIENT_SECRET,
+        redirect_uri,
+        grant_type: 'authorization_code',
+      }).toString(),
+    })
+
+    const tokenData = await tokenRes.json()
+
+    if (!tokenRes.ok) {
+      logger.warn('[AUTH] Google code exchange failed', { error: tokenData.error, desc: tokenData.error_description })
+      return res.status(401).json({
+        success: false,
+        error: { code: 'GOOGLE_FAILED', message: tokenData.error_description || 'Google sign-in failed.' }
+      })
+    }
+
+    // Fetch user info using the access token
+    const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: { Authorization: `Bearer ${tokenData.access_token}` },
+    })
+
+    if (!userInfoRes.ok) {
+      return res.status(401).json({
+        success: false,
+        error: { code: 'GOOGLE_FAILED', message: 'Failed to fetch Google user info.' }
+      })
+    }
+
+    const userInfo = await userInfoRes.json()
+    logger.info('[AUTH] Google user info fetched', { email: userInfo.email })
+
+    // Find or create user in Supabase auth
+    const { data: existingUsers } = await adminSupabase.auth.admin.listUsers()
+    const existing = existingUsers?.users?.find(u => u.email === userInfo.email)
+
+    let authUser, session
+
+    if (existing) {
+      const { data: sessionData, error: sessionError } = await adminSupabase.auth.admin.createSession(existing.id)
+      if (sessionError) throw sessionError
+      authUser = existing
+      session = sessionData.session
+    } else {
+      const { data: newUser, error: createError } = await adminSupabase.auth.admin.createUser({
+        email: userInfo.email,
+        email_confirm: true,
+        user_metadata: { full_name: userInfo.name, avatar_url: userInfo.picture },
+      })
+      if (createError) throw createError
+      authUser = newUser.user
+      const { data: sessionData, error: sessionError } = await adminSupabase.auth.admin.createSession(authUser.id)
+      if (sessionError) throw sessionError
+      session = sessionData.session
+    }
+
+    // Upsert profile row
+    const { data: profile } = await adminSupabase
+      .from('users')
+      .upsert({
+        id: authUser.id,
+        full_name: userInfo.name,
+        avatar_url: userInfo.picture,
+      }, { onConflict: 'id' })
+      .select()
+      .single()
+
+    logger.info('[AUTH] Google sign-in complete', { userId: authUser.id, isNew: !existing })
+    res.json({
+      success: true,
+      data: {
+        user: profile || authUser,
+        session: {
+          access_token: session.access_token,
+          refresh_token: session.refresh_token,
+          expires_at: session.expires_at,
+        },
+        is_new_user: !existing,
+      }
+    })
+  } catch (err) { next(err) }
+})
+
+// POST /auth/signout — invalidate Supabase session server-side
+router.post('/signout', requireAuth, async (req, res, next) => {
+  try {
+    await adminSupabase.auth.admin.signOut(req.user.id)
+    logger.info('[AUTH] User signed out', { userId: req.user.id })
+    res.json({ success: true })
   } catch (err) { next(err) }
 })
 

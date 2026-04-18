@@ -8,6 +8,9 @@ node_modules/
 .env.development
 .env.production
 
+.sql
+migrations/
+
 # Build output
 dist/
 build/

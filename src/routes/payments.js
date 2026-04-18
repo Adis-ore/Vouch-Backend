@@ -21,7 +21,7 @@ router.post('/initialize', requireAuth, async (req, res, next) => {
       email: userData.user.email,
       amount: journey.stake_amount * 100,
       metadata: { journey_id, user_id: req.user.id, type },
-      callback_url: `${process.env.FRONTEND_URL}/payment-complete`
+      callback_url: `vouch://payment-complete`
     })
 
     await adminSupabase.from('stakes').upsert({
@@ -77,7 +77,7 @@ router.post('/webhook', async (req, res) => {
         const { data: journey } = await adminSupabase
           .from('journeys').select('*').eq('id', journey_id).single()
 
-        if (journey && journey.current_participants >= journey.max_participants) {
+        if (journey && journey.current_participants >= 2) {
           const today = new Date().toISOString().split('T')[0]
           const endDate = new Date()
           endDate.setDate(endDate.getDate() + journey.duration_days)

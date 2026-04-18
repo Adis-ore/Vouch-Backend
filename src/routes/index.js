@@ -1,6 +1,7 @@
 const router = require('express').Router()
 
 router.use('/auth', require('./auth'))
+router.use('/drafts', require('./drafts'))
 router.use('/journeys', require('./journeys'))
 router.use('/checkins', require('./checkins'))
 router.use('/milestones', require('./milestones'))
@@ -10,5 +11,6 @@ router.use('/notifications', require('./notifications'))
 router.use('/users', require('./users'))
 router.use('/search', require('./search'))
 router.use('/disputes', require('./disputes'))
+router.use('/admin', require('./admin'))
 
 module.exports = router

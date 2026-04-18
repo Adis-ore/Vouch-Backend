@@ -1,11 +1,11 @@
 const { registerStreakChecker } = require('./streakChecker')
-const { registerCheckinReminder } = require('./checkInReminder')
 const { registerMilestoneChecker } = require('./milestoneChecker')
 const { registerCompletionChecker } = require('./completionChecker')
+const { registerStreakNotifications } = require('./streakNotifications')
 
 function scheduleJobs() {
   registerStreakChecker()
-  registerCheckinReminder()
+  registerStreakNotifications()
   registerMilestoneChecker()
   registerCompletionChecker()
   console.log('[CRON] All jobs scheduled')

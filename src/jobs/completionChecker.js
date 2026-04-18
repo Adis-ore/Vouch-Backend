@@ -1,16 +1,14 @@
 const cron = require('node-cron')
 const { adminSupabase } = require('../lib/supabase')
 const { sendPush } = require('../lib/push')
-const { initiateRefund } = require('../lib/paystack')
+const { processStakeRefund } = require('../lib/refund')
+const { writeHistory } = require('../lib/historyHelper')
 
 function registerCompletionChecker() {
   // Runs daily at 00:00 AM UTC
   cron.schedule('0 0 * * *', async () => {
     console.log('[CRON] Running completion checker')
 
-    const today = new Date().toISOString().split('T')[0]
-
-    // Find journeys whose end_date was yesterday or earlier and are still active
     const yesterday = new Date()
     yesterday.setDate(yesterday.getDate() - 1)
     const yesterdayStr = yesterday.toISOString().split('T')[0]
@@ -24,22 +22,19 @@ function registerCompletionChecker() {
     if (!dueJourneys?.length) return
 
     for (const journey of dueJourneys) {
-      // Mark journey as completed
       await adminSupabase
         .from('journeys')
         .update({ status: 'completed' })
         .eq('id', journey.id)
 
-      // Get all remaining members
       const { data: members } = await adminSupabase
         .from('journey_members')
-        .select('user_id, stake_status')
+        .select('user_id, stake_status, total_checkins')
         .eq('journey_id', journey.id)
 
       if (!members) continue
 
       for (const member of members) {
-        // Increment journeys_completed on user
         const { data: userData } = await adminSupabase
           .from('users')
           .select('journeys_completed, reputation_score')
@@ -51,43 +46,32 @@ function registerCompletionChecker() {
             .from('users')
             .update({
               journeys_completed: (userData.journeys_completed || 0) + 1,
-              reputation_score: (userData.reputation_score || 100) + 10
+              reputation_score: Math.min(100, (userData.reputation_score || 0) + 10),
             })
             .eq('id', member.user_id)
         }
 
-        // Return held stake
         if (member.stake_status === 'held') {
-          const { data: stake } = await adminSupabase
-            .from('stakes')
-            .select('*')
-            .eq('journey_id', journey.id)
-            .eq('user_id', member.user_id)
-            .eq('status', 'held')
-            .single()
-
-          if (stake?.paystack_transaction_id) {
-            try {
-              await initiateRefund({
-                transaction: stake.paystack_transaction_id,
-                amount: stake.amount * 100
-              })
-            } catch (err) {
-              console.error(`[CRON] Refund failed for stake ${stake.id}:`, err.message)
-            }
-          }
-
-          await adminSupabase
-            .from('stakes')
-            .update({ status: 'returned', returned_at: new Date().toISOString() })
-            .eq('id', stake.id)
-
-          await adminSupabase
-            .from('journey_members')
-            .update({ stake_status: 'returned' })
-            .eq('journey_id', journey.id)
-            .eq('user_id', member.user_id)
+          const completionPercent = journey.duration_days > 0
+            ? Math.round(((member.total_checkins || 0) / journey.duration_days) * 100)
+            : 0
+          await processStakeRefund({
+            journeyId: journey.id,
+            userId: member.user_id,
+            completionPercent,
+          })
         }
+
+        // Determine final stake status for history
+        const { data: updatedStake } = await adminSupabase
+          .from('stakes')
+          .select('status')
+          .eq('journey_id', journey.id)
+          .eq('user_id', member.user_id)
+          .single()
+
+        const finalStakeStatus = updatedStake?.status ?? member.stake_status
+        await writeHistory(member.user_id, journey, { ...member, stake_status: finalStakeStatus }, 'completed')
 
         await sendPush(
           member.user_id,
