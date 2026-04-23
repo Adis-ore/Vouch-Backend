@@ -1,8 +1,30 @@
 const router = require('express').Router()
-const { adminSupabase } = require('../lib/supabase')
+const { adminSupabase, anonSupabase } = require('../lib/supabase')
 const { requireAdmin } = require('../middleware/adminAuth')
 const { processStakeRefund } = require('../lib/refund')
 const { initiateRefund } = require('../lib/paystack')
+
+// POST /admin/login — authenticate an admin user
+router.post('/login', async (req, res, next) => {
+  try {
+    const { email, password } = req.body
+    const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'adisoreoluwa@gmail.com'
+    const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'Oreoluwa20!'
+
+    if (email !== ADMIN_EMAIL || password !== ADMIN_PASSWORD) {
+      return res.status(401).json({ success: false, error: { code: 'INVALID_CREDENTIALS', message: 'Incorrect email or password.' } })
+    }
+
+    const token = Buffer.from(`${email}:${Date.now()}`).toString('base64')
+    res.json({
+      success: true,
+      data: {
+        token,
+        user: { email, full_name: 'Admin' },
+      },
+    })
+  } catch (err) { next(err) }
+})
 
 router.use(requireAdmin)
 
@@ -250,6 +272,266 @@ router.get('/journeys', async (req, res, next) => {
 
     const { data, count } = await query
     res.json({ success: true, data: data || [], count })
+  } catch (err) { next(err) }
+})
+
+// GET /admin/users/:id — single user profile + their journeys
+router.get('/users/:id', async (req, res, next) => {
+  try {
+    const { data: user } = await adminSupabase
+      .from('users')
+      .select('id, full_name, country, region, plan, reputation_score, current_streak, best_streak, journeys_completed, created_at, avatar_url, is_banned, is_admin')
+      .eq('id', req.params.id)
+      .single()
+    if (!user) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND' } })
+
+    const { data: journeys } = await adminSupabase
+      .from('journeys')
+      .select('id, title, category, status, current_participants, stake_amount, start_date, end_date')
+      .eq('creator_id', req.params.id)
+      .order('created_at', { ascending: false })
+      .limit(20)
+
+    const { data: stakes } = await adminSupabase
+      .from('stakes')
+      .select('status, amount')
+      .eq('user_id', req.params.id)
+      .order('created_at', { ascending: false })
+      .limit(1)
+
+    res.json({ success: true, data: { ...user, journeys: journeys || [], latestStake: stakes?.[0] || null } })
+  } catch (err) { next(err) }
+})
+
+// POST /admin/users/:id/ban
+router.post('/users/:id/ban', async (req, res, next) => {
+  try {
+    await adminSupabase.from('users').update({ is_banned: true }).eq('id', req.params.id)
+    res.json({ success: true })
+  } catch (err) { next(err) }
+})
+
+// POST /admin/users/:id/unban
+router.post('/users/:id/unban', async (req, res, next) => {
+  try {
+    await adminSupabase.from('users').update({ is_banned: false }).eq('id', req.params.id)
+    res.json({ success: true })
+  } catch (err) { next(err) }
+})
+
+// GET /admin/flagged-users — users who are banned OR have >= 3 total flags received
+router.get('/flagged-users', async (req, res, next) => {
+  try {
+    const { limit = 100 } = req.query
+    const { data } = await adminSupabase
+      .from('users')
+      .select('id, full_name, country, region, current_streak, reputation_score, total_flags_received, journeys_completed, is_banned, created_at')
+      .or('is_banned.eq.true,total_flags_received.gte.3')
+      .order('total_flags_received', { ascending: false })
+      .limit(Number(limit))
+
+    const userIds = (data || []).map(u => u.id)
+    let stakeMap = {}
+    if (userIds.length > 0) {
+      const { data: stakes } = await adminSupabase
+        .from('stakes')
+        .select('user_id, status')
+        .in('user_id', userIds)
+        .in('status', ['forfeited', 'held'])
+        .order('created_at', { ascending: false })
+      for (const s of (stakes || [])) {
+        if (!stakeMap[s.user_id]) stakeMap[s.user_id] = s.status
+      }
+    }
+
+    const enriched = (data || []).map(u => ({ ...u, stake_status: stakeMap[u.id] || null }))
+    res.json({ success: true, data: enriched })
+  } catch (err) { next(err) }
+})
+
+// GET /admin/flagged-checkins — checkins with flag_count >= 2
+router.get('/flagged-checkins', async (req, res, next) => {
+  try {
+    const { limit = 50, offset = 0 } = req.query
+    const { data } = await adminSupabase
+      .from('checkins')
+      .select('id, checkin_date, note, proof_url, flag_count, admin_flagged, status, created_at, user:users(id, full_name), journey:journeys(id, title)')
+      .gte('flag_count', 2)
+      .order('created_at', { ascending: false })
+      .range(Number(offset), Number(offset) + Number(limit) - 1)
+    res.json({ success: true, data: data || [] })
+  } catch (err) { next(err) }
+})
+
+// PATCH /admin/flagged-checkins/:id — approve or reject
+router.patch('/flagged-checkins/:id', async (req, res, next) => {
+  try {
+    const { action } = req.body // 'approve' | 'reject'
+    const updates = action === 'approve'
+      ? { flag_count: 0, admin_flagged: false, status: 'approved' }
+      : { admin_flagged: true, status: 'rejected' }
+    await adminSupabase.from('checkins').update(updates).eq('id', req.params.id)
+    res.json({ success: true })
+  } catch (err) { next(err) }
+})
+
+// GET /admin/disputes — all disputes
+router.get('/disputes', async (req, res, next) => {
+  try {
+    const { limit = 50, offset = 0 } = req.query
+    const { data } = await adminSupabase
+      .from('disputes')
+      .select('id, type, description, status, created_at, reporter:users!reporter_id(id, full_name), journey:journeys(id, title)')
+      .order('created_at', { ascending: false })
+      .range(Number(offset), Number(offset) + Number(limit) - 1)
+    res.json({ success: true, data: data || [] })
+  } catch (err) { next(err) }
+})
+
+// PATCH /admin/disputes/:id — update status
+router.patch('/disputes/:id', async (req, res, next) => {
+  try {
+    const { status } = req.body
+    await adminSupabase.from('disputes').update({ status }).eq('id', req.params.id)
+    res.json({ success: true })
+  } catch (err) { next(err) }
+})
+
+// GET /admin/categories — category summary from journeys
+router.get('/categories', async (req, res, next) => {
+  try {
+    const CATS = [
+      { name: 'Learning', color: '#6366f1' },
+      { name: 'Fitness',  color: '#3ECFAA' },
+      { name: 'Habit',    color: '#E8A838' },
+      { name: 'Career',   color: '#47bfff' },
+      { name: 'Faith',    color: '#a78bfa' },
+      { name: 'Finance',  color: '#f87171' },
+    ]
+    const { data: journeys } = await adminSupabase
+      .from('journeys')
+      .select('category, status')
+    const counts = {}
+    for (const j of (journeys || [])) {
+      if (!counts[j.category]) counts[j.category] = { total: 0, active: 0 }
+      counts[j.category].total++
+      if (j.status === 'active') counts[j.category].active++
+    }
+    const result = CATS.map(c => ({
+      ...c,
+      id: c.name.toLowerCase(),
+      active_journeys: counts[c.name]?.active || 0,
+      total_journeys: counts[c.name]?.total || 0,
+      disabled: false,
+    }))
+    res.json({ success: true, data: result })
+  } catch (err) { next(err) }
+})
+
+// GET /admin/config — platform config
+router.get('/config', async (req, res, next) => {
+  try {
+    const defaults = [
+      { key: 'max_stake_ngn',            value: '10000', description: 'Maximum stake amount in Naira' },
+      { key: 'min_stake_ngn',            value: '100',   description: 'Minimum stake amount in Naira' },
+      { key: 'max_journey_days',         value: '90',    description: 'Max journey duration (days)' },
+      { key: 'auto_abandon_missed_days', value: '3',     description: 'Consecutive missed days before auto-removal' },
+      { key: 'relaxed_mode_max_misses',  value: '1',     description: 'Max missed days/week in relaxed mode' },
+    ]
+    const { data: rows } = await adminSupabase.from('platform_settings').select('key, value')
+    const stored = {}
+    for (const r of (rows || [])) stored[r.key] = r.value
+    const config = defaults.map(d => ({ ...d, value: stored[d.key] ?? d.value }))
+    res.json({ success: true, data: config })
+  } catch (err) {
+    // table may not exist yet — return defaults
+    const defaults = [
+      { key: 'max_stake_ngn',            value: '10000', description: 'Maximum stake amount in Naira' },
+      { key: 'min_stake_ngn',            value: '100',   description: 'Minimum stake amount in Naira' },
+      { key: 'max_journey_days',         value: '90',    description: 'Max journey duration (days)' },
+      { key: 'auto_abandon_missed_days', value: '3',     description: 'Consecutive missed days before auto-removal' },
+      { key: 'relaxed_mode_max_misses',  value: '1',     description: 'Max missed days/week in relaxed mode' },
+    ]
+    res.json({ success: true, data: defaults })
+  }
+})
+
+// PUT /admin/config — save platform config
+router.put('/config', async (req, res, next) => {
+  try {
+    const { config } = req.body // [{ key, value }]
+    for (const item of (config || [])) {
+      await adminSupabase.from('platform_settings')
+        .upsert({ key: item.key, value: String(item.value) }, { onConflict: 'key' })
+    }
+    res.json({ success: true })
+  } catch (err) { next(err) }
+})
+
+// GET /admin/accounts — all admin users
+router.get('/accounts', async (req, res, next) => {
+  try {
+    const { data } = await adminSupabase
+      .from('users')
+      .select('id, full_name, created_at, is_admin')
+      .eq('is_admin', true)
+      .order('created_at', { ascending: false })
+    res.json({ success: true, data: data || [] })
+  } catch (err) { next(err) }
+})
+
+// POST /admin/broadcast — send a notification + push to all users
+router.post('/broadcast', async (req, res, next) => {
+  try {
+    const { title, body, type = 'announcement', data = {} } = req.body
+    if (!title || !body) {
+      return res.status(400).json({ success: false, error: { code: 'MISSING_FIELDS', message: 'title and body are required.' } })
+    }
+
+    const { data: users } = await adminSupabase
+      .from('users')
+      .select('id, notification_token, notification_enabled')
+
+    if (!users || users.length === 0) {
+      return res.json({ success: true, sent: 0, pushed: 0 })
+    }
+
+    // Bulk-insert notifications for all users
+    const notifications = users.map(u => ({
+      user_id: u.id,
+      type,
+      title,
+      body,
+      data,
+      read: false,
+    }))
+    await adminSupabase.from('notifications').insert(notifications)
+
+    // Send push only to users with a valid token and notifications enabled
+    const { Expo } = require('expo-server-sdk')
+    const expo = new Expo()
+    const messages = users
+      .filter(u => u.notification_enabled && u.notification_token && Expo.isExpoPushToken(u.notification_token))
+      .map(u => ({ to: u.notification_token, sound: 'default', title, body, data }))
+
+    let pushed = 0
+    if (messages.length > 0) {
+      const chunks = expo.chunkPushNotifications(messages)
+      for (const chunk of chunks) {
+        try { await expo.sendPushNotificationsAsync(chunk); pushed += chunk.length } catch (_) {}
+      }
+    }
+
+    // Log a single record so Send History can show it
+    adminSupabase.from('admin_notifications').insert({
+      type: 'announcement',
+      title,
+      body,
+      data: { sent: users.length, pushed },
+      resolved: true,
+    }).then(() => {}).catch(() => {})
+
+    res.json({ success: true, sent: users.length, pushed })
   } catch (err) { next(err) }
 })
 

@@ -366,14 +366,14 @@ router.post('/:id/join', requireAuth, async (req, res, next) => {
       .from('users').select('full_name').eq('id', req.user.id).single()
 
     if (journey.creator_id !== req.user.id) {
-      await adminSupabase.from('notifications').insert({
+      adminSupabase.from('notifications').insert({
         user_id: journey.creator_id,
         type: 'member_joined',
         title: `${joiner?.full_name || 'Someone'} joined your journey`,
         body: `"${journey.title}" now has ${newCount} members.`,
         data: { route: 'journey', journey_id: journey.id, tab: 'members' },
         read: false,
-      }).catch(() => {})
+      }).then(() => {}).catch(() => {})
       await sendPush(journey.creator_id, 'New member joined',
         `${joiner?.full_name || 'Someone'} joined your journey "${journey.title}"`,
         { journey_id: journey.id }

@@ -125,14 +125,14 @@ router.post('/signup', async (req, res, next) => {
     }
 
     // Send welcome notification
-    await adminSupabase.from('notifications').insert({
+    adminSupabase.from('notifications').insert({
       user_id: user.id,
       type: 'welcome',
       title: `Welcome to Vouch, ${full_name.trim().split(' ')[0]}`,
       body: "You're all set. Create your first journey or find one to join — your partner is out there.",
       data: { route: 'discover' },
       read: false,
-    }).catch(() => {}) // non-blocking
+    }).then(() => {}).catch(() => {}) // non-blocking
 
     // session is null when Supabase email confirmation is ON
     if (!session) {

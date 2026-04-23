@@ -43,6 +43,36 @@ router.get('/me', requireAuth, async (req, res, next) => {
     // Fall back to global_streak for rows that haven't been migrated yet.
     const currentStreak = user.current_streak ?? user.global_streak ?? 0
 
+    // Daily greeting — once per day on first app open
+    const { count: greetedToday } = await adminSupabase
+      .from('notifications')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', req.user.id)
+      .eq('type', 'daily_greeting')
+      .gte('created_at', today + 'T00:00:00.000Z')
+
+    if (greetedToday === 0) {
+      const firstName = (user.full_name || 'there').split(' ')[0]
+      const hour = new Date().getHours()
+      const timeGreet = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening'
+      const messages = [
+        `${timeGreet}, ${firstName}! Your streak is alive — let's keep it that way today.`,
+        `${timeGreet}, ${firstName}! Small steps every day add up to something big. You've got this.`,
+        `${timeGreet}, ${firstName}! Show up today and let the momentum do the rest.`,
+        `${timeGreet}, ${firstName}! Consistency is the secret. Check in today and keep winning.`,
+        `${timeGreet}, ${firstName}! Every day you show up is a win. Make today count.`,
+      ]
+      const body = messages[new Date().getDay() % messages.length]
+      adminSupabase.from('notifications').insert({
+        user_id: req.user.id,
+        type: 'daily_greeting',
+        title: `${timeGreet}, ${firstName}!`,
+        body,
+        data: { route: 'journeys' },
+        read: false,
+      }).then(() => {}).catch(() => {})
+    }
+
     logger.info('[USERS] Fetched profile', { userId: req.user.id, currentStreak })
     res.json({ success: true, data: { user: { ...user, current_streak: currentStreak } } })
   } catch (err) { next(err) }

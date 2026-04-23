@@ -13,4 +13,8 @@ router.use('/search', require('./search'))
 router.use('/disputes', require('./disputes'))
 router.use('/admin', require('./admin'))
 
+if (process.env.NODE_ENV !== 'production') {
+  router.use('/test', require('./test'))
+}
+
 module.exports = router

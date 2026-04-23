@@ -128,6 +128,42 @@ router.post('/', requireAuth, async (req, res, next) => {
       }
     }
 
+    // Check if all active journeys are checked in today — send encouragement if so
+    const { data: allMemberships } = await adminSupabase
+      .from('journey_members')
+      .select('journey_id')
+      .eq('user_id', req.user.id)
+      .eq('status', 'active')
+
+    const { data: todayCheckins } = await adminSupabase
+      .from('checkins')
+      .select('journey_id')
+      .eq('user_id', req.user.id)
+      .eq('checkin_date', today)
+
+    const checkedJourneyIds = new Set((todayCheckins || []).map(c => c.journey_id))
+    const allDone = (allMemberships || []).length > 0 &&
+      (allMemberships || []).every(m => checkedJourneyIds.has(m.journey_id))
+
+    if (allDone) {
+      const firstName = (checkinUser?.full_name || 'there').split(' ')[0]
+      const encouragements = [
+        `All check-ins done for today, ${firstName}! Consistency like this is how streaks are built. See you tomorrow.`,
+        `You've completed all your check-ins today, ${firstName}! Keep the momentum — tomorrow is another chance to show up.`,
+        `That's a wrap for today, ${firstName}! Every check-in is a promise kept to yourself. Well done.`,
+        `All done, ${firstName}! You showed up today and that's what matters. Rest up and come back strong.`,
+      ]
+      const body = encouragements[new Date().getDay() % encouragements.length]
+      adminSupabase.from('notifications').insert({
+        user_id: req.user.id,
+        type: 'checkin',
+        title: 'All check-ins done!',
+        body,
+        data: { route: 'journeys' },
+        read: false,
+      }).then(() => {}).catch(() => {})
+    }
+
     res.status(201).json({ success: true, checkin, current_streak: newStreak, journey_completed: journeyCompleted })
   } catch (err) { next(err) }
 })
