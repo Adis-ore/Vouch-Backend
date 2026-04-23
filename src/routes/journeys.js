@@ -245,7 +245,7 @@ router.post('/', requireAuth, async (req, res, next) => {
         email: userData.user.email,
         amount: amount * 100,
         metadata: { journey_id: journey.id, user_id: req.user.id, type: 'creator' },
-        callback_url: `vouch://payment-complete`
+        callback_url: `${process.env.FRONTEND_URL}/payment-complete`
       })
       payment_url = authorization_url
       await adminSupabase.from('stakes').insert({
@@ -349,7 +349,7 @@ router.post('/:id/join', requireAuth, async (req, res, next) => {
         email: userData.user.email,
         amount: amount * 100,
         metadata: { journey_id: journey.id, user_id: req.user.id, type: 'member' },
-        callback_url: `vouch://payment-complete`
+        callback_url: `${process.env.FRONTEND_URL}/payment-complete`
       })
       payment_url = authorization_url
       await adminSupabase.from('stakes').insert({

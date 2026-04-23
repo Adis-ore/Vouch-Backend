@@ -123,7 +123,7 @@ router.post('/journey/:id/retry-payment', requireAuth, async (req, res, next) =>
       email: userData.user.email,
       amount: journey.stake_amount * 100,
       metadata: { journey_id: journey.id, user_id: req.user.id, type: 'creator' },
-      callback_url: 'vouch://payment-complete',
+      callback_url: `${process.env.FRONTEND_URL}/payment-complete`,
     })
     await adminSupabase.from('stakes').upsert({
       journey_id: journey.id,
@@ -295,7 +295,7 @@ router.post('/:draftId/publish', requireAuth, async (req, res, next) => {
         email: authUser.user.email,
         amount: amount * 100,
         metadata: { journey_id: journey.id, user_id: req.user.id, type: 'creator' },
-        callback_url: 'vouch://payment-complete',
+        callback_url: `${process.env.FRONTEND_URL}/payment-complete`,
       })
       payment_url = authorization_url
       await adminSupabase.from('stakes').insert({

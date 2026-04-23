@@ -22,7 +22,7 @@ router.post('/initialize', requireAuth, async (req, res, next) => {
       email: userData.user.email,
       amount: journey.stake_amount * 100,
       metadata: { journey_id, user_id: req.user.id, type },
-      callback_url: `vouch://payment-complete`
+      callback_url: `${process.env.FRONTEND_URL}/payment-complete`
     })
 
     await adminSupabase.from('stakes').upsert({
@@ -173,7 +173,7 @@ router.post('/journey-pass/initialize', requireAuth, async (req, res, next) => {
       amount: pricing.amount * 100,
       currency: pricing.currency,
       metadata: { type: 'journey_pass', draft_id: draft.id, user_id: req.user.id, country_code: countryCode },
-      callback_url: 'vouch://payment-complete',
+      callback_url: `${process.env.FRONTEND_URL}/payment-complete`,
     })
 
     await adminSupabase.from('journey_passes').insert({
