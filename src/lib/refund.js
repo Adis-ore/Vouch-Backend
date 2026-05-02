@@ -1,3 +1,6 @@
+// PHASE 2 — stake/deposit mechanics disabled. This file is kept for future re-enablement.
+/* eslint-disable */
+/*
 const { adminSupabase } = require('./supabase')
 const { initiateRefund } = require('./paystack')
 
@@ -8,12 +11,7 @@ function getRefundPercent(completionPercent) {
   return 0
 }
 
-/**
- * processStakeRefund — calculate tier-based refund and execute via Paystack.
- * @param {string} journeyId
- * @param {string} userId
- * @param {number} completionPercent  0–100, member's personal checkin percent
- */
+// processStakeRefund — calculate tier-based refund and execute via Paystack.
 async function processStakeRefund({ journeyId, userId, completionPercent }) {
   const { data: stake } = await adminSupabase
     .from('stakes')
@@ -86,3 +84,9 @@ async function processStakeRefund({ journeyId, userId, completionPercent }) {
 }
 
 module.exports = { getRefundPercent, processStakeRefund }
+*/
+
+module.exports = {
+  getRefundPercent: () => 0,
+  processStakeRefund: async () => null,
+}

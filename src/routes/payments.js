@@ -6,7 +6,9 @@ const { initializePayment, initiateRefund } = require('../lib/paystack')
 const { sendPush } = require('../lib/push')
 const { canCreateOrJoinJourney } = require('../lib/planLimits')
 
-// POST /payments/initialize
+// PHASE 2 — Stake deposit initialization (requires CBN escrow licensing)
+// Uncomment when licensing is obtained
+/*
 router.post('/initialize', requireAuth, async (req, res, next) => {
   try {
     const { journey_id, type } = req.body
@@ -36,6 +38,7 @@ router.post('/initialize', requireAuth, async (req, res, next) => {
     res.json({ success: true, payment_url: authorization_url, reference })
   } catch (err) { next(err) }
 })
+*/
 
 // POST /payments/webhook — Paystack webhook (no auth, signature-verified)
 router.post('/webhook', async (req, res) => {
@@ -52,7 +55,9 @@ router.post('/webhook', async (req, res) => {
 
     const event = JSON.parse(req.body)
 
-    if (event.event === 'charge.success') {
+    // PHASE 2 — Stake deposit webhook handling (re-enable with initialize route)
+    /*
+    if (event.event === 'charge.success' && metadata.type !== 'journey_pass') {
       const { reference, metadata } = event.data
       const { journey_id, user_id, type } = metadata
 
@@ -68,12 +73,10 @@ router.post('/webhook', async (req, res) => {
         .eq('user_id', user_id)
 
       if (type === 'creator') {
-        // Enforce plan limit at publish time — refund and block if over limit
         const { data: creatorProfile } = await adminSupabase
           .from('users').select('plan').eq('id', user_id).single()
         const { allowed } = await canCreateOrJoinJourney(user_id, creatorProfile?.plan ?? 'free')
         if (!allowed) {
-          // Refund the payment immediately — can't open the journey
           await adminSupabase.from('journeys').update({ status: 'draft' }).eq('id', journey_id)
           await sendPush(user_id, 'Journey not published', 'You\'ve reached your active journey limit. Your deposit will be refunded.', { journey_id })
         } else {
@@ -84,26 +87,20 @@ router.post('/webhook', async (req, res) => {
       if (type === 'member') {
         const { data: journey } = await adminSupabase
           .from('journeys').select('*').eq('id', journey_id).single()
-
         if (journey && journey.current_participants >= 2) {
           const today = new Date().toISOString().split('T')[0]
           const endDate = new Date()
           endDate.setDate(endDate.getDate() + journey.duration_days)
           await adminSupabase.from('journeys').update({
-            status: 'active',
-            start_date: today,
+            status: 'active', start_date: today,
             end_date: endDate.toISOString().split('T')[0]
           }).eq('id', journey_id)
         }
       }
 
-      await sendPush(
-        user_id,
-        'Deposit confirmed',
-        'Your security deposit is held safely. Complete the journey to get it back.',
-        { journey_id }
-      )
+      await sendPush(user_id, 'Deposit confirmed', 'Your security deposit is held safely. Complete the journey to get it back.', { journey_id })
     }
+    */
 
     if (event.event === 'charge.success' && metadata.type === 'journey_pass') {
       await adminSupabase

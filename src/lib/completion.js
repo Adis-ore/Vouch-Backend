@@ -45,12 +45,12 @@ async function completeJourneyForUser(journeyId, userId) {
       .update({ journeys_completed: (u?.journeys_completed || 0) + 1 })
       .eq('id', userId)
 
-    // Stake refund (tier-based)
-    let stakeReturned = false
-    if (member.stake_status === 'held') {
-      const refundResult = await processStakeRefund({ journeyId, userId, completionPercent })
-      stakeReturned = (refundResult?.refundPercent || 0) > 0
-    }
+    // PHASE 2 — stake refunds disabled
+    const stakeReturned = false
+    // if (member.stake_status === 'held') {
+    //   const refundResult = await processStakeRefund({ journeyId, userId, completionPercent })
+    //   stakeReturned = (refundResult?.refundPercent || 0) > 0
+    // }
 
     // Write to history
     const { data: updatedStake } = await adminSupabase
