@@ -74,14 +74,14 @@ router.get('/me', requireAuth, async (req, res, next) => {
     }
 
     logger.info('[USERS] Fetched profile', { userId: req.user.id, currentStreak })
-    res.json({ success: true, data: { user: { ...user, current_streak: currentStreak } } })
+    res.json({ success: true, data: { user: { ...user, current_streak: currentStreak, email: req.user.email } } })
   } catch (err) { next(err) }
 })
 
 // PATCH /users/me — update own profile
 router.patch('/me', requireAuth, async (req, res, next) => {
   try {
-    const allowed = ['full_name', 'bio', 'avatar_url', 'avatar_seed', 'avatar_bg', 'phone', 'country', 'region', 'streak_mode', 'notification_enabled', 'timezone']
+    const allowed = ['full_name', 'bio', 'avatar_url', 'avatar_seed', 'avatar_bg', 'phone', 'country', 'region', 'streak_mode', 'notification_enabled', 'notification_token', 'timezone']
     const updates = {}
     for (const key of allowed) {
       // Allow null explicitly — used to clear avatar_seed when a photo is uploaded
