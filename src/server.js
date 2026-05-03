@@ -25,6 +25,8 @@ app.use(requestLogger)
 app.use('/api/v1/payments/webhook', express.raw({ type: 'application/json' }))
 app.use(express.json())
 
+app.get('/health', (req, res) => res.json({ status: 'ok', ts: Date.now() }))
+
 app.use('/api/v1', routes)
 app.use(errorHandler)
 

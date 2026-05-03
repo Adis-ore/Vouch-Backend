@@ -2,8 +2,10 @@ const { registerStreakChecker } = require('./streakChecker')
 const { registerMilestoneChecker } = require('./milestoneChecker')
 const { registerCompletionChecker } = require('./completionChecker')
 const { registerStreakNotifications } = require('./streakNotifications')
+const { registerKeepAlive } = require('./keepAlive')
 
 function scheduleJobs() {
+  registerKeepAlive()
   registerStreakChecker()
   registerStreakNotifications()
   registerMilestoneChecker()
