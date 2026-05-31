@@ -13,7 +13,7 @@ router.get('/me', requireAuth, async (req, res, next) => {
 
     const { data: user, error } = await adminSupabase
       .from('users')
-      .select('id, full_name, avatar_url, avatar_seed, avatar_bg, bio, country, region, plan, streak_total, longest_streak, current_streak, global_streak, global_streak_date, journeys_completed, reputation_score, total_approvals_received, total_flags_received, notification_enabled, streak_mode, created_at, badges(key, name, earned_at)')
+      .select('id, full_name, username, avatar_url, avatar_seed, avatar_bg, bio, country, region, plan, streak_total, longest_streak, current_streak, global_streak, global_streak_date, journeys_completed, reputation_score, total_approvals_received, total_flags_received, notification_enabled, streak_mode, created_at, badges(key, name, earned_at)')
       .eq('id', req.user.id)
       .single()
 
@@ -81,7 +81,7 @@ router.get('/me', requireAuth, async (req, res, next) => {
 // PATCH /users/me — update own profile
 router.patch('/me', requireAuth, async (req, res, next) => {
   try {
-    const allowed = ['full_name', 'bio', 'avatar_url', 'avatar_seed', 'avatar_bg', 'phone', 'country', 'region', 'streak_mode', 'notification_enabled', 'notification_token', 'timezone']
+    const allowed = ['full_name', 'username', 'bio', 'avatar_url', 'avatar_seed', 'avatar_bg', 'phone', 'country', 'region', 'streak_mode', 'notification_enabled', 'notification_token', 'timezone']
     const updates = {}
     for (const key of allowed) {
       // Allow null explicitly — used to clear avatar_seed when a photo is uploaded

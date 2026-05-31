@@ -545,6 +545,51 @@ router.post('/:id/abandon', requireAuth, async (req, res, next) => {
   } catch (err) { next(err) }
 })
 
+// POST /journeys/:id/rejoin — rejoin a journey the user previously abandoned
+router.post('/:id/rejoin', requireAuth, async (req, res, next) => {
+  try {
+    const { data: journey } = await adminSupabase
+      .from('journeys').select('*').eq('id', req.params.id).single()
+
+    if (!journey) {
+      return res.status(404).json({ success: false, error: { code: 'NOT_FOUND' } })
+    }
+    if (!['open', 'active'].includes(journey.status)) {
+      return res.status(400).json({ success: false, error: { code: 'JOURNEY_NOT_JOINABLE', message: 'This journey is no longer accepting members.' } })
+    }
+
+    const { data: member } = await adminSupabase
+      .from('journey_members')
+      .select('*')
+      .eq('journey_id', req.params.id)
+      .eq('user_id', req.user.id)
+      .single()
+
+    if (!member || member.status !== 'abandoned') {
+      return res.status(400).json({ success: false, error: { code: 'NOT_ABANDONED', message: 'You do not have an abandoned membership for this journey.' } })
+    }
+
+    const canJoin = await canCreateOrJoinJourney(req.user.id)
+    if (!canJoin) {
+      return res.status(400).json({ success: false, error: { code: 'JOURNEY_LIMIT_REACHED', message: 'You have reached your active journey limit.' } })
+    }
+
+    await adminSupabase
+      .from('journey_members')
+      .update({
+        status: 'active',
+        current_streak: 0,
+        last_checkin_date: null,
+        abandoned_at: null,
+        joined_at: new Date().toISOString(),
+      })
+      .eq('journey_id', req.params.id)
+      .eq('user_id', req.user.id)
+
+    res.json({ success: true })
+  } catch (err) { next(err) }
+})
+
 // GET /journeys/:id
 router.get('/:id', requireAuth, async (req, res, next) => {
   try {

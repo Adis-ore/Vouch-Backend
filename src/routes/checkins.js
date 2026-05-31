@@ -271,6 +271,36 @@ router.post('/:id/verify', requireAuth, async (req, res, next) => {
   } catch (err) { next(err) }
 })
 
+// PATCH /checkins/:id — edit own check-in note (within 24 hours of submission)
+router.patch('/:id', requireAuth, async (req, res, next) => {
+  try {
+    const { note } = req.body
+    if (!note || note.length < 20) {
+      return res.status(400).json({ success: false, error: { code: 'NOTE_TOO_SHORT', message: 'Note must be at least 20 characters' } })
+    }
+
+    const { data: checkin } = await adminSupabase
+      .from('checkins').select('*').eq('id', req.params.id).single()
+
+    if (!checkin) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND' } })
+    if (checkin.user_id !== req.user.id) return res.status(403).json({ success: false, error: { code: 'FORBIDDEN' } })
+
+    const hoursSince = (Date.now() - new Date(checkin.created_at).getTime()) / 3600000
+    if (hoursSince > 24) {
+      return res.status(400).json({ success: false, error: { code: 'EDIT_WINDOW_EXPIRED', message: 'Check-ins can only be edited within 24 hours.' } })
+    }
+
+    const { data, error } = await adminSupabase
+      .from('checkins')
+      .update({ note, edited_at: new Date().toISOString() })
+      .eq('id', req.params.id)
+      .select().single()
+
+    if (error) throw error
+    res.json({ success: true, checkin: data })
+  } catch (err) { next(err) }
+})
+
 // GET /checkins/journey/:journeyId — check-ins for a journey (today_only=true for feed, all for heatmap)
 router.get('/journey/:journeyId', requireAuth, async (req, res, next) => {
   try {

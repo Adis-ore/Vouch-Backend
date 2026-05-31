@@ -13,9 +13,8 @@ const { checkAndAwardBadges } = require('./badges')
  * Returns the new streak value and writes current_streak + longest_streak to users.
  */
 async function recalculateStreak(userId, timezone = 'Africa/Lagos') {
-  const since = new Date()
-  since.setDate(since.getDate() - 31)
-  const sinceStr = since.toISOString().split('T')[0]
+  const sinceStr = getLocalDate(timezone, -31)
+  const sinceDate = new Date(sinceStr)
 
   // All memberships — active ones + recently completed/abandoned (within window)
   const { data: memberships } = await adminSupabase
@@ -26,7 +25,7 @@ async function recalculateStreak(userId, timezone = 'Africa/Lagos') {
   const relevant = (memberships || []).filter(m => {
     if (m.status === 'active') return true
     const endedAt = m.completed_at || m.abandoned_at
-    return endedAt && new Date(endedAt) >= since
+    return endedAt && new Date(endedAt) >= sinceDate
   })
 
   if (relevant.length === 0) {
@@ -81,9 +80,7 @@ async function recalculateStreak(userId, timezone = 'Africa/Lagos') {
   let i = 1
 
   while (i <= 30) {
-    const d = new Date()
-    d.setDate(d.getDate() - i)
-    const dateStr = d.toISOString().split('T')[0]
+    const dateStr = getLocalDate(timezone, -i)
     const complete = isCompleteDay(dateStr)
 
     if (streakMode === 'strict') {
